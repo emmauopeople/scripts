@@ -1,0 +1,574 @@
+Church Management & Sacrament System
+Architecture, Design & Implementation Document  
+Stack: React, Node.js, PostgreSQL, Microservices
+
+1. System overview
+A web-based church management system where:
+
+Regular users can:
+
+Login
+
+Register church members
+
+Create sacraments (baptism, first communion, confirmation)
+
+Create & print sacrament cards
+
+View & print member information
+
+Admin-users can:
+
+Do everything a regular user can
+
+Create other admin-users
+
+Create regular users
+
+View church growth charts/analytics
+
+The system is built as microservices behind an API Gateway, with a React frontend and Node.js backend services using PostgreSQL.
+
+2. Requirements
+2.1 Functional requirements
+Authentication & authorization
+
+User login with email/password
+
+JWT-based session
+
+Roles: ADMIN, USER
+
+Admin can create users and assign roles
+
+Member management
+
+Create, update, view members
+
+Search members by name, ID, and basic filters
+
+View and print member information
+
+Sacrament management
+
+Create sacrament records: baptism, first communion, confirmation
+
+Link sacrament to member
+
+View sacraments per member
+
+Card generation
+
+Generate printable sacrament cards (PDF)
+
+Generate printable member info (PDF)
+
+Analytics
+
+View member growth over time
+
+View sacraments per period
+
+Admin-only dashboard
+
+2.2 Non-functional requirements
+Scalability: Each service can scale independently.
+
+Security: JWT, role-based access, HTTPS.
+
+Reliability: Backups, migrations, basic monitoring.
+
+Extensibility: Easy to add new sacraments, roles, or churches.
+
+Performance: Fast search using PostgreSQL indexes.
+
+3. High-level architecture
+3.1 Components
+Client: React SPA
+
+API Gateway: Node.js (Fastify/Express)
+
+Microservices:
+
+Auth Service
+
+Member Service
+
+Sacrament Service
+
+Document Service
+
+Analytics Service
+
+Databases: One PostgreSQL database per service
+
+(Optional future) Message broker for events
+
+3.2 Request flow
+User logs in via React → API Gateway → Auth Service → JWT returned.
+
+React stores JWT (httpOnly cookie or memory).
+
+Subsequent requests include JWT → API Gateway validates → routes to appropriate service.
+
+Services talk only via HTTP (MVP) or events (future).
+
+4. Microservice design
+4.1 Auth Service
+Responsibilities:
+
+User registration (admin-only)
+
+Login
+
+Role & permission management
+
+Issue & validate JWT (API Gateway validates, service re-checks if needed)
+
+Entities:
+
+users
+
+id (uuid)
+
+church_id (uuid, nullable for super-admin)
+
+name
+
+email (unique)
+
+password_hash
+
+role (ADMIN, USER)
+
+status (ACTIVE, INACTIVE)
+
+created_at, updated_at
+
+churches (for multi-church support)
+
+id (uuid)
+
+name
+
+address
+
+created_at, updated_at
+
+Key endpoints:
+
+POST /auth/login
+
+POST /auth/register (admin-only)
+
+GET /auth/me
+
+POST /auth/logout (optional, for blacklisting)
+
+Implementation notes:
+
+Use bcrypt for password hashing.
+
+Use jsonwebtoken for JWT.
+
+JWT payload: { userId, role, churchId }.
+
+4.2 Member Service
+Responsibilities:
+
+Manage church members
+
+Provide data for sacraments, documents, analytics
+
+Entities:
+
+members
+
+id (uuid)
+
+church_id (uuid)
+
+first_name
+
+last_name
+
+middle_name (nullable)
+
+date_of_birth
+
+gender
+
+address
+
+phone
+
+email
+
+status (ACTIVE, INACTIVE, DECEASED)
+
+created_by (user_id)
+
+created_at, updated_at
+
+Indexes:
+
+idx_members_church_name on (church_id, last_name, first_name)
+
+Full-text index on full_name (computed or concatenated)
+
+Key endpoints:
+
+POST /members
+
+GET /members/:id
+
+GET /members?search=&status=&page=&limit=
+
+PUT /members/:id
+
+Implementation notes:
+
+Enforce church_id from JWT, not from client.
+
+Use PostgreSQL full-text search or ILIKE for simple search.
+
+4.3 Sacrament Service
+Responsibilities:
+
+Manage sacrament records
+
+Link to members
+
+Provide data for cards and analytics
+
+Entities:
+
+sacrament_types
+
+id (smallint)
+
+code (BAPTISM, FIRST_COMMUNION, CONFIRMATION)
+
+name
+
+Seeded data.
+
+sacraments
+
+id (uuid)
+
+church_id (uuid)
+
+member_id (uuid)
+
+sacrament_type_id (smallint)
+
+date
+
+place
+
+officiant
+
+notes
+
+created_by (user_id)
+
+created_at, updated_at
+
+Key endpoints:
+
+POST /sacraments
+
+GET /sacraments/:id
+
+GET /members/:memberId/sacraments
+
+GET /sacraments?type=&from=&to=&page=&limit=
+
+Implementation notes:
+
+Validate member_id belongs to same church_id as user.
+
+Optionally call Member Service to verify member existence (or cache).
+
+4.4 Document Service
+Responsibilities:
+
+Generate PDFs:
+
+Sacrament cards
+
+Member info sheets
+
+Manage templates (basic at first, configurable later)
+
+Entities:
+
+templates
+
+id (uuid)
+
+church_id (uuid)
+
+type (SACRAMENT_CARD, MEMBER_INFO)
+
+name
+
+content (HTML or template string)
+
+created_at, updated_at
+
+Key endpoints:
+
+POST /documents/sacrament-card
+
+Body: { memberId, sacramentId }
+
+Returns: PDF stream or URL
+
+POST /documents/member-info
+
+Body: { memberId }
+
+Returns: PDF stream or URL
+
+Implementation notes:
+
+Use puppeteer to render HTML templates to PDF, or pdfkit.
+
+Fetch member & sacrament data from respective services.
+
+For performance, offload heavy PDF generation to a job queue (BullMQ + Redis).
+
+4.5 Analytics Service
+Responsibilities:
+
+Provide church growth and sacrament statistics
+
+Admin-only dashboards
+
+Data model (MVP):
+
+No separate tables initially; query Member & Sacrament services directly and cache results in:
+
+analytics_cache
+
+id (uuid)
+
+church_id
+
+metric_key (e.g., members_growth_monthly)
+
+data (JSON)
+
+generated_at
+
+Key endpoints:
+
+GET /analytics/members/growth?from=&to=
+
+GET /analytics/sacraments/count?groupBy=month
+
+GET /analytics/dashboard
+
+Implementation notes:
+
+MVP: call Member/Sacrament services, aggregate in memory, cache.
+
+Future: switch to event-driven and maintain precomputed aggregates.
+
+5. API Gateway design
+Responsibilities:
+
+Route requests to services
+
+Validate JWT
+
+Enforce basic role checks
+
+Centralized logging, rate limiting, CORS
+
+Routing examples:
+
+/auth/* → Auth Service
+
+/members/* → Member Service
+
+/sacraments/* → Sacrament Service
+
+/documents/* → Document Service
+
+/analytics/* → Analytics Service
+
+Implementation notes:
+
+Node.js + Fastify/Express
+
+Middleware:
+
+authMiddleware to verify JWT and attach req.user
+
+roleMiddleware(requiredRole) for admin-only routes
+
+Use environment variables for service URLs.
+
+6. Frontend (React) design
+6.1 Structure
+State management: React Query for server state, minimal local state.
+
+Routing: React Router.
+
+UI: TailwindCSS or component library.
+
+6.2 Main pages
+Auth
+
+Login page
+
+Members
+
+Member list (search, pagination)
+
+Member create/edit form
+
+Member detail page (with sacraments list)
+
+Print member info (opens PDF in new tab)
+
+Sacraments
+
+Create sacrament form (select member, type, date, place, officiant)
+
+Sacrament detail page
+
+Generate sacrament card (button → PDF)
+
+Admin
+
+User management (list, create, assign role)
+
+Analytics dashboard (charts)
+
+6.3 Role-based UI
+Use JWT payload (role) to:
+
+Hide admin menu for non-admins
+
+Protect routes with a RequireRole component
+
+7. Security design
+Authentication: JWT (short-lived access token, optional refresh token).
+
+Authorization: Role-based checks at:
+
+API Gateway
+
+Service level (for sensitive operations)
+
+Data isolation:
+
+All queries filtered by church_id from JWT.
+
+Transport security: HTTPS in production.
+
+Password security: bcrypt with strong salt rounds.
+
+8. Deployment & DevOps
+8.1 Environments
+development
+
+staging
+
+production
+
+8.2 Containerization
+Each service has its own Dockerfile.
+
+Use Docker Compose for local development:
+
+api-gateway
+
+auth-service
+
+member-service
+
+sacrament-service
+
+document-service
+
+analytics-service
+
+postgres-auth, postgres-member, postgres-sacrament, postgres-document, postgres-analytics
+
+redis (if using BullMQ)
+
+8.3 CI/CD
+Lint, test, build on push.
+
+Run migrations per service.
+
+Deploy containers to:
+
+Kubernetes, or
+
+Docker Swarm, or
+
+Simple VM with Docker Compose (MVP).
+
+9. Implementation details (Node.js)
+9.1 Common patterns
+Framework: Fastify or Express
+
+ORM: Prisma or TypeORM
+
+Validation: Zod or Joi
+
+Logging: pino or winston
+
+9.2 Example: Auth Service structure
+text
+auth-service/
+  src/
+    index.ts
+    app.ts
+    routes/
+      auth.routes.ts
+    controllers/
+      auth.controller.ts
+    services/
+      auth.service.ts
+      user.service.ts
+    repositories/
+      user.repository.ts
+    middlewares/
+      errorHandler.ts
+    utils/
+      jwt.ts
+      password.ts
+    prisma/ (or orm config)
+  package.json
+  Dockerfile
+10. Future enhancements
+Event-driven architecture:
+
+Emit MemberCreated, SacramentCreated events.
+
+Analytics and notifications subscribe.
+
+Notification Service:
+
+Email/SMS reminders for sacraments, anniversaries.
+
+Advanced templates:
+
+Per-church customizable card designs.
+
+Offline/mobile:
+
+React Native app with sync.
+
+If you’d like, next I can:
+
+Draft concrete API specs (request/response JSON) for each endpoint, or
+
+Design the database schemas in SQL for all services.
